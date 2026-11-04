@@ -76,7 +76,7 @@ pub fn take_all() -> Vec<Job> {
     jobs
 }
 
-fn src_files(d: &std::path::Path) -> Vec<PathBuf> {
+fn src_files(d: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = match fs::read_dir(d) {
         Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some("src")).collect(),
         Err(_) => Vec::new(),
@@ -89,15 +89,6 @@ fn read_lines(f: &std::path::Path, out: &mut Vec<PathBuf>) {
     if let Ok(t) = fs::read_to_string(f) {
         out.extend(t.lines().filter(|l| !l.is_empty()).map(PathBuf::from));
     }
-}
-
-fn src_files(d: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = match fs::read_dir(d) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some("src")).collect(),
-        Err(_) => Vec::new(),
-    };
-    v.sort();
-    v
 }
 
 /// Chi raccoglie i percorsi di una selezione multipla. Tiene il "lucchetto" finche' non viene eliminato,
