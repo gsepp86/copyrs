@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+; Modifica il percorso se copyrs.exe non e' in C:\Tools\CopyRs
+[HKEY_CURRENT_USER\Software\Classes\*\shell\CopyRs]
+@="Copia con CopyRs"
+"Icon"="C:\\Tools\\CopyRs\\copyrs.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\CopyRs\command]
+@="\"C:\\Tools\\CopyRs\\copyrs.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\CopyRs]
+@="Copia con CopyRs"
+"Icon"="C:\\Tools\\CopyRs\\copyrs.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\CopyRs\command]
+@="\"C:\\Tools\\CopyRs\\copyrs.exe\" \"%1\""
