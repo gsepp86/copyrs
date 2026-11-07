@@ -1,4 +1,11 @@
 # CopyRs
+
+Un copiatore di file **leggero, gratuito e open source** scritto in Rust, ispirato ai classici copiatori di file per Windows: una finestra compatta, una coda di copia e il controllo che i file siano arrivati davvero integri.
+
+## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre lo la trovi ovunque apprezzo il gesto ;-)
+
+[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
+
 Copiatore di file minimale con verifica CRC32 (MIT).
 
 Build: `cargo build --release` -> `target/release/copyrs.exe`
