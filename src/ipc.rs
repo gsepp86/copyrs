@@ -17,7 +17,7 @@ fn qdir() -> Option<PathBuf> {
     Some(d)
 }
 
-fn age(p: &std::path::Path) -> Option<Duration> {
+fn age(p: &Path) -> Option<Duration> {
     fs::metadata(p).and_then(|m| m.modified()).ok()?.elapsed().ok()
 }
 
@@ -83,12 +83,6 @@ fn src_files(d: &Path) -> Vec<PathBuf> {
     };
     v.sort();
     v
-}
-
-fn read_lines(f: &std::path::Path, out: &mut Vec<PathBuf>) {
-    if let Ok(t) = fs::read_to_string(f) {
-        out.extend(t.lines().filter(|l| !l.is_empty()).map(PathBuf::from));
-    }
 }
 
 /// Chi raccoglie i percorsi di una selezione multipla. Tiene il "lucchetto" finche' non viene eliminato,

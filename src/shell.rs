@@ -126,6 +126,15 @@ mod imp {
             Remove-Item -ErrorAction SilentlyContinue (Join-Path $send 'CopyRs.lnk'); exit 0")
     }
 
+    /// Apre un indirizzo web nel browser predefinito.
+    pub fn open_url(url: &str) {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .creation_flags(0x0800_0000)
+            .spawn();
+    }
+
     /// File negli appunti di Esplora file + true se erano stati "tagliati" (Ctrl+X).
     pub fn clipboard_files() -> (Vec<PathBuf>, bool) {
         use clipboard_win::{formats, get_clipboard, register_format};
@@ -149,6 +158,7 @@ mod imp {
     pub fn status() -> (usize, usize) { (0, 0) }
     pub fn create_shortcuts() -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
     pub fn remove_shortcuts() -> io::Result<()> { Ok(()) }
+    pub fn open_url(url: &str) { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
     pub fn clipboard_files() -> (Vec<PathBuf>, bool) { (Vec::new(), false) }
 }
 

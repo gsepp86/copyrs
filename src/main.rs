@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 const RED: Color32 = Color32::from_rgb(230, 60, 60);
 const ORANGE: Color32 = Color32::from_rgb(230, 150, 0);
+const PAYPAL_URL: &str = "https://paypal.me/PeppeCP";
+const GITHUB_URL: &str = "https://github.com/gsepp86/copyrs";
 
 #[derive(Default)]
 struct CopyApp {
@@ -35,6 +37,7 @@ struct CopyApp {
     samp: Option<(Instant, u64)>,
     jobs: Option<Receiver<ipc::Job>>,
     size: usize,
+    about: bool,
 }
 
 fn fmt(b: u64) -> String {
@@ -201,7 +204,7 @@ impl CopyApp {
         });
         ui.separator();
         if !self.msg.is_empty() {
-            ui.colored_label(Color32::from_rgb(80, 140, 240), &self.msg);
+            ui.colored_label(Color32::from_rgb(80, 140, 240), self.msg.clone());
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(640.0);
@@ -287,6 +290,37 @@ impl CopyApp {
         });
     }
 
+    fn about_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Informazioni");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Indietro").clicked() {
+                    self.about = false;
+                }
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(640.0);
+            ui.heading("CopyRs – copia file in modo semplice e controllato");
+            ui.add_space(10.0);
+            ui.label("Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)");
+            ui.add_space(6.0);
+            let pay = egui::Button::new(egui::RichText::new("Dona con PayPal").strong().color(Color32::WHITE))
+                .fill(Color32::from_rgb(0, 112, 186))
+                .min_size(egui::vec2(170.0, 34.0));
+            if ui.add(pay).on_hover_text(PAYPAL_URL).clicked() {
+                shell::open_url(PAYPAL_URL);
+            }
+            ui.add_space(12.0);
+            ui.label("Un copiatore di file leggero, gratuito e open source scritto in Rust, ispirato ai classici copiatori di file per Windows: una finestra compatta, una coda di copia e il controllo che i file siano arrivati davvero integri.");
+            ui.add_space(12.0);
+            if ui.link(GITHUB_URL).clicked() {
+                shell::open_url(GITHUB_URL);
+            }
+        });
+    }
+
     /// Finestra al centro con la domanda sui file gia' presenti (vale per il primo lavoro in attesa).
     fn conflict_window(&mut self, ctx: &egui::Context) {
         let Some((_, existing, same)) = self.pending.first() else { return };
@@ -330,6 +364,10 @@ impl CopyApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Impostazioni").clicked() {
                     self.settings = true;
+                }
+                let info = egui::Button::new(egui::RichText::new("i").strong()).min_size(egui::vec2(30.0, 0.0));
+                if ui.add(info).on_hover_text("Informazioni").clicked() {
+                    self.about = true;
                 }
             });
         });
@@ -664,6 +702,8 @@ impl eframe::App for CopyApp {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if self.first_run {
                         self.first_run_ui(ui);
+                    } else if self.about {
+                        self.about_ui(ui);
                     } else if self.settings {
                         self.settings_ui(ui);
                     } else {
