@@ -1,8 +1,8 @@
 ## CopyRs – copia file in modo semplice e controllato
 
-## Un copiatore di file leggero, gratuito e open source per Windows, scritto in Rust.
+# Un copiatore di file leggero, gratuito e open source per Windows, scritto in Rust.
 
-## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)
+# Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)
 
 [![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
 
