@@ -123,6 +123,7 @@ impl CopyApp {
     }
 
     fn begin(&mut self) {
+        self.msg.clear();
         let Some(dest) = self.dest.clone() else { return };
         let job = ipc::Job { sources: self.sources.clone(), dest, mv: self.mv };
         self.enqueue(job);
@@ -165,18 +166,28 @@ impl CopyApp {
 
     fn first_run_ui(&mut self, ui: &mut egui::Ui) {
         ui.set_max_width(640.0);
-        ui.heading("Integrazione con Windows");
-        ui.label("CopyRs può aggiungere a Esplora file le voci «Copia con CopyRs» e «Incolla con CopyRs» nel menu contestuale (clic destro su file, cartelle e sfondo di una cartella).");
+        ui.heading("Installare CopyRs?");
+        ui.label("CopyRs si copia in una cartella stabile del tuo profilo (senza permessi di amministratore) e si integra con Windows:");
+        ui.add_space(4.0);
+        ui.label("- «Copia con CopyRs», «Sposta con CopyRs» e «Incolla con CopyRs» nel menu del clic destro (su Windows 11: «Mostra altre opzioni»)");
+        ui.label("- la voce «Invia a → CopyRs»");
+        ui.label("- un collegamento nel menu Start, da cui puoi fissarlo alla barra delle applicazioni");
         ui.add_space(6.0);
-        ui.weak("Attenzione: Windows non permette a un programma normale di sostituire la finestra di copia di sistema. Ctrl+C / Ctrl+V e il trascinamento in Esplora file continuano a usare quella originale. Le modifiche valgono solo per il tuo utente e si annullano dalle Impostazioni.");
+        ui.weak("Windows non permette di sostituire la finestra di copia di sistema: Ctrl+C / Ctrl+V e il trascinamento in Esplora file continuano a usare quella originale. Tutto si può rimuovere dalle Impostazioni.");
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Attiva integrazione").clicked() {
-                match shell::install() {
+            let go = egui::Button::new(egui::RichText::new("Installa").strong().color(Color32::WHITE))
+                .fill(Color32::from_rgb(40, 110, 220))
+                .min_size(egui::vec2(110.0, 32.0));
+            if ui.add(go).clicked() {
+                match shell::install_app() {
                     Ok(()) => {
                         shell::mark_done();
                         self.first_run = false;
-                        self.msg.clear();
+                        self.msg = match shell::installed_path() {
+                            Some(p) => format!("CopyRs installato in {p}. Lo trovi nel menu Start e nel clic destro (su Windows 11: Mostra altre opzioni)."),
+                            None => "CopyRs installato.".into(),
+                        };
                     }
                     Err(e) => self.msg = format!("Non riuscito: {e}"),
                 }
@@ -188,7 +199,7 @@ impl CopyApp {
             }
         });
         if !self.msg.is_empty() {
-            ui.label(&self.msg);
+            ui.colored_label(RED, self.msg.clone());
         }
     }
 
@@ -244,6 +255,19 @@ impl CopyApp {
 
             if cfg!(windows) {
                 ui.add_space(10.0);
+                ui.strong("Installazione");
+                match shell::installed_path() {
+                    Some(p) => ui.label(format!("Installato in: {p}")),
+                    None => ui.weak("Non installato: CopyRs parte da dove l'hai scaricato. Installandolo, voci del clic destro e collegamenti restano validi anche se sposti o cancelli il file scaricato."),
+                };
+                if ui.button("Installa / aggiorna CopyRs").clicked() {
+                    self.msg = match shell::install_app() {
+                        Ok(()) => "CopyRs installato e integrato con Windows (clic destro, Invia a, menu Start).".into(),
+                        Err(e) => format!("Non riuscito: {e}"),
+                    };
+                }
+
+                ui.add_space(10.0);
                 ui.strong("Integrazione con Windows");
                 ui.label("Aggiunge «Copia con CopyRs» e «Incolla con CopyRs» al menu contestuale di Esplora file. Non sostituisce Ctrl+C / Ctrl+V. Su Windows 11 la voce si trova in clic destro → «Mostra altre opzioni».");
                 let (ok, total) = shell::status();
@@ -274,7 +298,7 @@ impl CopyApp {
                 ui.label("Crea «CopyRs» e «CopyRs - Impostazioni» sul Desktop e nel menu Start, più la voce «Invia a → CopyRs» (utile con molti file). Per la barra delle applicazioni: dal menu Start cerca CopyRs, clic destro → «Aggiungi alla barra delle applicazioni» (Windows non permette di farlo in automatico).");
                 ui.horizontal(|ui| {
                     if ui.button("Crea collegamenti").clicked() {
-                        self.msg = match shell::create_shortcuts() {
+                        self.msg = match shell::create_shortcuts(true) {
                             Ok(()) => "Collegamenti creati: Desktop, menu Start e Invia a.".into(),
                             Err(e) => format!("Non riuscito: {e}"),
                         };
@@ -282,6 +306,26 @@ impl CopyApp {
                     if ui.button("Rimuovi collegamenti").clicked() {
                         self.msg = match shell::remove_shortcuts() {
                             Ok(()) => "Collegamenti rimossi.".into(),
+                            Err(e) => format!("Non riuscito: {e}"),
+                        };
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.strong("Menu del clic destro di Windows 11");
+                ui.label("Windows 11 mostra le voci dei programmi come CopyRs solo sotto «Mostra altre opzioni». Se preferisci vederle subito puoi usare, per il tuo utente, il menu classico di Windows 10: Esplora file viene riavviato (le sue finestre aperte si chiudono). Si può annullare in qualsiasi momento.");
+                let classic = shell::classic_menu_enabled();
+                ui.label(if classic { "Stato: menu classico attivo" } else { "Stato: menu di Windows 11 (predefinito)" });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!classic, egui::Button::new("Usa il menu classico (riavvia Esplora file)")).clicked() {
+                        self.msg = match shell::set_classic_menu(true) {
+                            Ok(()) => "Menu classico attivato: le voci di CopyRs ora compaiono subito nel clic destro.".into(),
+                            Err(e) => format!("Non riuscito: {e}"),
+                        };
+                    }
+                    if ui.add_enabled(classic, egui::Button::new("Torna al menu di Windows 11")).clicked() {
+                        self.msg = match shell::set_classic_menu(false) {
+                            Ok(()) => "Menu di Windows 11 ripristinato.".into(),
                             Err(e) => format!("Non riuscito: {e}"),
                         };
                     }
@@ -372,12 +416,15 @@ impl CopyApp {
             });
         });
         ui.add_space(6.0);
+        if !self.msg.is_empty() {
+            ui.colored_label(Color32::from_rgb(80, 140, 240), self.msg.clone());
+        }
         ui.columns(2, |cols| {
             let (l, r) = cols.split_at_mut(1);
             let (l, r) = (&mut l[0], &mut r[0]);
 
             l.strong("File e cartelle da copiare");
-            l.horizontal(|ui| {
+            l.horizontal_wrapped(|ui| {
                 if ui.button("Aggiungi file…").clicked() {
                     if let Some(f) = rfd::FileDialog::new().pick_files() {
                         self.sources.extend(f);
@@ -403,7 +450,7 @@ impl CopyApp {
 
             r.strong("Destinazione");
             r.horizontal_wrapped(|ui| {
-                ui.label(self.dest.as_ref().map(|d| d.display().to_string()).unwrap_or("—".into()));
+                ui.label(self.dest.as_ref().map(|d| d.display().to_string()).unwrap_or("Nessuna cartella scelta".into()));
                 if ui.button("Sfoglia…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
                         self.dest = Some(d);
@@ -728,12 +775,16 @@ fn main() -> eframe::Result {
     if open_settings {
         raw.remove(0);
     }
+    let move_flag = raw.first().map_or(false, |a| a.as_os_str() == "--move");
+    if move_flag {
+        raw.remove(0);
+    }
     let paste = raw.first().map_or(false, |a| a.as_os_str() == "--paste");
     let (mut sources, mut dest, mv) = if paste {
         let (files, cut) = shell::clipboard_files();
         (files, raw.get(1).map(PathBuf::from), cut)
     } else {
-        (raw.into_iter().map(PathBuf::from).collect::<Vec<_>>(), None, false)
+        (raw.into_iter().map(PathBuf::from).collect::<Vec<_>>(), None, move_flag)
     };
 
     // Selezione multipla: Explorer avvia un processo per file, solo uno prosegue con tutti i percorsi.

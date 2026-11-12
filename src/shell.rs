@@ -13,6 +13,8 @@ mod imp {
         vec![
             (format!(r"{ROOT}\*\shell\CopyRs"), "Copia con CopyRs", format!("\"{exe}\" \"%1\"")),
             (format!(r"{ROOT}\Directory\shell\CopyRs"), "Copia con CopyRs", format!("\"{exe}\" \"%1\"")),
+            (format!(r"{ROOT}\*\shell\CopyRsMove"), "Sposta con CopyRs", format!("\"{exe}\" --move \"%1\"")),
+            (format!(r"{ROOT}\Directory\shell\CopyRsMove"), "Sposta con CopyRs", format!("\"{exe}\" --move \"%1\"")),
             (format!(r"{ROOT}\Directory\shell\CopyRsPaste"), "Incolla con CopyRs", format!("\"{exe}\" --paste \"%1\"")),
             (format!(r"{ROOT}\Directory\Background\shell\CopyRsPaste"), "Incolla con CopyRs", format!("\"{exe}\" --paste \"%V\"")),
         ]
@@ -35,8 +37,46 @@ mod imp {
         }
     }
 
+    fn install_dir() -> Option<PathBuf> {
+        Some(PathBuf::from(env::var_os("LOCALAPPDATA")?).join("Programs").join("CopyRs"))
+    }
+
+    fn installed_exe() -> Option<PathBuf> {
+        install_dir().map(|d| d.join("copyrs.exe")).filter(|p| p.exists())
+    }
+
+    /// Percorso a cui puntano voci e collegamenti: la copia installata, se c'e', altrimenti l'exe in esecuzione.
+    fn exe_str() -> io::Result<String> {
+        let p = match installed_exe() {
+            Some(p) => p,
+            None => env::current_exe()?,
+        };
+        Ok(p.to_string_lossy().to_string())
+    }
+
+    pub fn installed_path() -> Option<String> {
+        installed_exe().map(|p| p.to_string_lossy().to_string())
+    }
+
+    /// Copia l'exe in %LOCALAPPDATA%\Programs\CopyRs e attiva clic destro, "Invia a" e menu Start.
+    pub fn install_app() -> io::Result<()> {
+        let cur = env::current_exe()?;
+        let dir = install_dir().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "cartella del profilo non trovata"))?;
+        fs::create_dir_all(&dir)?;
+        let dst = dir.join("copyrs.exe");
+        let a = fs::canonicalize(&cur).ok();
+        let same = a.is_some() && a == fs::canonicalize(&dst).ok();
+        if !same {
+            fs::copy(&cur, &dst).map_err(|e| {
+                io::Error::new(e.kind(), format!("copia in «{}»: {e} (chiudi le altre finestre di CopyRs e riprova)", dst.display()))
+            })?;
+        }
+        install()?;
+        create_shortcuts(false)
+    }
+
     pub fn install() -> io::Result<()> {
-        let exe = env::current_exe()?.to_string_lossy().to_string();
+        let exe = exe_str()?;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         for (path, label, cmd) in entries(&exe) {
             let (k, _) = hkcu.create_subkey(&path)?;
@@ -64,7 +104,7 @@ mod imp {
 
     /// Voci presenti nel registro con il comando giusto per questo exe, e numero totale previsto.
     pub fn status() -> (usize, usize) {
-        let exe = env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let exe = exe_str().unwrap_or_default();
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let list = entries(&exe);
         let ok = list
@@ -104,15 +144,16 @@ mod imp {
     }
 
     /// Crea i collegamenti "CopyRs" e "CopyRs - Impostazioni" (Desktop e menu Start) e la voce "Invia a".
-    pub fn create_shortcuts() -> io::Result<()> {
-        let exe = env::current_exe()?.to_string_lossy().replace('\'', "''");
+    pub fn create_shortcuts(desktop: bool) -> io::Result<()> {
+        let exe = exe_str()?.replace('\'', "''");
+        let dirs = if desktop { "@($desk,$start)" } else { "@($start)" };
         let script = format!(
             "$exe='{exe}'; $ws=New-Object -ComObject WScript.Shell; \
              $desk=[Environment]::GetFolderPath('Desktop'); \
              $start=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'; \
              $send=Join-Path $env:APPDATA 'Microsoft\\Windows\\SendTo'; \
              function Mk($dir,$name,$a){{ $s=$ws.CreateShortcut((Join-Path $dir ($name+'.lnk'))); $s.TargetPath=$exe; $s.Arguments=$a; $s.WorkingDirectory=(Split-Path $exe); $s.IconLocation=$exe; $s.Save() }}; \
-             foreach($d in @($desk,$start)){{ Mk $d 'CopyRs' ''; Mk $d 'CopyRs - Impostazioni' '--settings' }}; \
+             foreach($d in {dirs}){{ Mk $d 'CopyRs' ''; Mk $d 'CopyRs - Impostazioni' '--settings' }}; \
              Mk $send 'CopyRs' ''"
         );
         ps(&script)
@@ -124,6 +165,26 @@ mod imp {
             $send=Join-Path $env:APPDATA 'Microsoft\\Windows\\SendTo'; \
             foreach($d in @($desk,$start)){ Remove-Item -ErrorAction SilentlyContinue (Join-Path $d 'CopyRs.lnk'),(Join-Path $d 'CopyRs - Impostazioni.lnk') }; \
             Remove-Item -ErrorAction SilentlyContinue (Join-Path $send 'CopyRs.lnk'); exit 0")
+    }
+
+    const CLASSIC_KEY: &str = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}";
+
+    pub fn classic_menu_enabled() -> bool {
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey(format!(r"{CLASSIC_KEY}\InprocServer32")).is_ok()
+    }
+
+    /// Attiva/disattiva il menu "classico" (voci subito visibili) per l'utente e riavvia Esplora file.
+    pub fn set_classic_menu(on: bool) -> io::Result<()> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if on {
+            let (k, _) = hkcu.create_subkey(format!(r"{CLASSIC_KEY}\InprocServer32"))?;
+            let empty = String::new();
+            k.set_value("", &empty)?;
+        } else {
+            let _ = hkcu.delete_subkey_all(CLASSIC_KEY);
+        }
+        ps("Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; \
+            if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }; exit 0")
     }
 
     /// Apre un indirizzo web nel browser predefinito.
@@ -156,7 +217,11 @@ mod imp {
     pub fn install() -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
     pub fn uninstall() -> io::Result<()> { Ok(()) }
     pub fn status() -> (usize, usize) { (0, 0) }
-    pub fn create_shortcuts() -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
+    pub fn create_shortcuts(_desktop: bool) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
+    pub fn install_app() -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
+    pub fn installed_path() -> Option<String> { None }
+    pub fn classic_menu_enabled() -> bool { false }
+    pub fn set_classic_menu(_on: bool) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
     pub fn remove_shortcuts() -> io::Result<()> { Ok(()) }
     pub fn open_url(url: &str) { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
     pub fn clipboard_files() -> (Vec<PathBuf>, bool) { (Vec::new(), false) }
