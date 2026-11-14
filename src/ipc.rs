@@ -176,3 +176,48 @@ impl Drop for Gather {
         }
     }
 }
+
+fn stage_path() -> Option<PathBuf> {
+    Some(crate::shell::settings_dir()?.join("stage.txt"))
+}
+
+/// «Copia con CopyRs»: mette da parte i percorsi (come un Copia). Se un altro processo della stessa selezione
+/// ha scritto da pochi secondi, i percorsi si uniscono.
+pub fn stage_write(new: &[PathBuf], mv: bool) {
+    let Some(p) = stage_path() else { return };
+    if let Some(d) = p.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    let mut all: Vec<PathBuf> = new.to_vec();
+    if age(&p).map_or(false, |e| e < Duration::from_secs(3)) {
+        if let Some((old, _, _)) = stage_read() {
+            all.extend(old);
+        }
+    }
+    all.sort();
+    all.dedup();
+    let mut text = format!("{}\n{}\n", crate::shell::clipboard_seq(), if mv { "move" } else { "copy" });
+    for s in &all {
+        text.push_str(&s.to_string_lossy());
+        text.push('\n');
+    }
+    let _ = fs::write(&p, text);
+}
+
+/// File messi da parte (percorsi, spostamento?, numero degli appunti di Windows in quel momento). Valgono 12 ore.
+pub fn stage_read() -> Option<(Vec<PathBuf>, bool, u32)> {
+    let p = stage_path()?;
+    if age(&p).map_or(true, |e| e > Duration::from_secs(12 * 3600)) {
+        return None;
+    }
+    let text = fs::read_to_string(&p).ok()?;
+    let mut lines = text.lines();
+    let seq: u32 = lines.next()?.trim().parse().ok()?;
+    let mv = lines.next()? == "move";
+    let v: Vec<PathBuf> = lines.filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+    if v.is_empty() {
+        None
+    } else {
+        Some((v, mv, seq))
+    }
+}

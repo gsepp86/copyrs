@@ -10,14 +10,34 @@ mod imp {
     const ROOT: &str = r"Software\Classes";
 
     fn entries(exe: &str) -> Vec<(String, &'static str, String)> {
+        let q = |args: &str| format!("\"{exe}\" {args}");
         vec![
-            (format!(r"{ROOT}\*\shell\CopyRs"), "Copia con CopyRs", format!("\"{exe}\" \"%1\"")),
-            (format!(r"{ROOT}\Directory\shell\CopyRs"), "Copia con CopyRs", format!("\"{exe}\" \"%1\"")),
-            (format!(r"{ROOT}\*\shell\CopyRsMove"), "Sposta con CopyRs", format!("\"{exe}\" --move \"%1\"")),
-            (format!(r"{ROOT}\Directory\shell\CopyRsMove"), "Sposta con CopyRs", format!("\"{exe}\" --move \"%1\"")),
-            (format!(r"{ROOT}\Directory\shell\CopyRsPaste"), "Incolla con CopyRs", format!("\"{exe}\" --paste \"%1\"")),
-            (format!(r"{ROOT}\Directory\Background\shell\CopyRsPaste"), "Incolla con CopyRs", format!("\"{exe}\" --paste \"%V\"")),
+            // 1) come Copia + Incolla: «Copia con CopyRs» mette da parte i file, «Incolla con CopyRs» li copia nella cartella
+            (format!(r"{ROOT}\*\shell\CopyRs1Copy"), "Copia con CopyRs", q("--stage \"%1\"")),
+            (format!(r"{ROOT}\Directory\shell\CopyRs1Copy"), "Copia con CopyRs", q("--stage \"%1\"")),
+            (format!(r"{ROOT}\Directory\shell\CopyRs2Paste"), "Incolla con CopyRs", q("--paste \"%1\"")),
+            (format!(r"{ROOT}\Directory\Background\shell\CopyRs2Paste"), "Incolla con CopyRs", q("--paste \"%V\"")),
+            // 2) scelgono la cartella di destinazione con una finestra
+            (format!(r"{ROOT}\*\shell\CopyRs3CopyTo"), "Copia con CopyRs in…", q("\"%1\"")),
+            (format!(r"{ROOT}\Directory\shell\CopyRs3CopyTo"), "Copia con CopyRs in…", q("\"%1\"")),
+            (format!(r"{ROOT}\*\shell\CopyRs4MoveTo"), "Sposta con CopyRs in…", q("--move \"%1\"")),
+            (format!(r"{ROOT}\Directory\shell\CopyRs4MoveTo"), "Sposta con CopyRs in…", q("--move \"%1\"")),
         ]
+    }
+
+    /// Nomi usati dalle versioni precedenti: vanno tolti per non avere voci doppie.
+    fn legacy_entries() -> Vec<String> {
+        [
+            r"*\shell\CopyRs",
+            r"Directory\shell\CopyRs",
+            r"Directory\shell\CopyRsPaste",
+            r"Directory\Background\shell\CopyRsPaste",
+            r"*\shell\CopyRsMove",
+            r"Directory\shell\CopyRsMove",
+        ]
+        .iter()
+        .map(|s| format!(r"{ROOT}\{s}"))
+        .collect()
     }
 
     fn marker() -> Option<PathBuf> {
@@ -78,6 +98,9 @@ mod imp {
     pub fn install() -> io::Result<()> {
         let exe = exe_str()?;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        for p in legacy_entries() {
+            let _ = hkcu.delete_subkey_all(&p);
+        }
         for (path, label, cmd) in entries(&exe) {
             let (k, _) = hkcu.create_subkey(&path)?;
             k.set_value("", &label)?;
@@ -97,6 +120,9 @@ mod imp {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         for (path, _, _) in entries("") {
             let _ = hkcu.delete_subkey_all(&path);
+        }
+        for p in legacy_entries() {
+            let _ = hkcu.delete_subkey_all(&p);
         }
         notify();
         Ok(())
@@ -187,6 +213,46 @@ mod imp {
             if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }; exit 0")
     }
 
+    fn ps_out(script: &str) -> io::Result<String> {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).to_string();
+            Err(io::Error::new(io::ErrorKind::Other, err.lines().next().unwrap_or("errore sconosciuto").trim().to_string()))
+        }
+    }
+
+    /// Tag dell'ultima release pubblicata su GitHub (es. "v2.2.0").
+    pub fn latest_release_tag() -> io::Result<String> {
+        let r = ps_out(
+            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+             (Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/gsepp86/copyrs/releases/latest' -Headers @{'User-Agent'='CopyRs'}).tag_name",
+        );
+        match r {
+            Ok(tag) if !tag.is_empty() => Ok(tag),
+            Ok(_) => Err(io::Error::new(io::ErrorKind::Other, "risposta vuota da GitHub")),
+            Err(e) if e.to_string().contains("404") => {
+                Err(io::Error::new(io::ErrorKind::Other, "non ci sono ancora release pubblicate su GitHub"))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetClipboardSequenceNumber() -> u32;
+    }
+
+    /// Cambia a ogni modifica degli appunti di Windows: serve a capire se dopo «Copia con CopyRs» e' stato fatto un altro Ctrl+C.
+    pub fn clipboard_seq() -> u32 {
+        unsafe { GetClipboardSequenceNumber() }
+    }
+
     /// Apre un indirizzo web nel browser predefinito.
     pub fn open_url(url: &str) {
         use std::os::windows::process::CommandExt;
@@ -224,6 +290,8 @@ mod imp {
     pub fn set_classic_menu(_on: bool) -> io::Result<()> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
     pub fn remove_shortcuts() -> io::Result<()> { Ok(()) }
     pub fn open_url(url: &str) { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    pub fn latest_release_tag() -> io::Result<String> { Err(io::Error::new(io::ErrorKind::Unsupported, "solo Windows")) }
+    pub fn clipboard_seq() -> u32 { 0 }
     pub fn clipboard_files() -> (Vec<PathBuf>, bool) { (Vec::new(), false) }
 }
 

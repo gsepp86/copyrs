@@ -9,13 +9,25 @@ use engine::{Collision, Item, Shared, Status};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const RED: Color32 = Color32::from_rgb(230, 60, 60);
 const ORANGE: Color32 = Color32::from_rgb(230, 150, 0);
 const PAYPAL_URL: &str = "https://paypal.me/PeppeCP";
 const GITHUB_URL: &str = "https://github.com/gsepp86/copyrs";
+const RELEASES_URL: &str = "https://github.com/gsepp86/copyrs/releases/latest";
+
+/// Esito del controllo aggiornamenti.
+#[derive(Clone, PartialEq, Default)]
+enum Upd {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available(String),
+    Failed(String),
+}
 
 #[derive(Default)]
 struct CopyApp {
@@ -38,6 +50,7 @@ struct CopyApp {
     jobs: Option<Receiver<ipc::Job>>,
     size: usize,
     about: bool,
+    upd: Arc<Mutex<Upd>>,
 }
 
 fn fmt(b: u64) -> String {
@@ -93,6 +106,36 @@ fn load_size() -> usize {
     shell::load_str("size").and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0).min(2)
 }
 
+/// Versione mostrata all'utente (2.2.0 -> 2.2).
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").trim_end_matches(".0").to_string()
+}
+
+fn ver_parts(s: &str) -> Vec<u32> {
+    s.trim_start_matches(|c: char| !c.is_ascii_digit())
+        .split('.')
+        .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let (mut a, mut b) = (ver_parts(latest), ver_parts(current));
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a > b
+}
+
+/// «Incolla con CopyRs»: usa i file messi da parte con «Copia con CopyRs», a meno che dopo sia stato fatto
+/// un altro Ctrl+C con dei file (allora vale quello di Windows).
+fn paste_source() -> (Vec<PathBuf>, bool) {
+    let (win_files, win_cut) = shell::clipboard_files();
+    match ipc::stage_read() {
+        Some((files, mv, seq)) if seq == shell::clipboard_seq() || win_files.is_empty() => (files, mv),
+        _ => (win_files, win_cut),
+    }
+}
+
 fn is_err(s: &Status) -> bool {
     matches!(s, Status::Failed(_) | Status::Mismatch)
 }
@@ -120,6 +163,27 @@ impl CopyApp {
             size: load_size(),
             ..Default::default()
         }
+    }
+
+    /// Cerca l'ultima release su GitHub senza bloccare la finestra.
+    fn check_updates(&self, ctx: &egui::Context) {
+        *self.upd.lock().unwrap() = Upd::Checking;
+        let st = self.upd.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let res = match shell::latest_release_tag() {
+                Ok(tag) => {
+                    if is_newer_version(&tag, env!("CARGO_PKG_VERSION")) {
+                        Upd::Available(tag)
+                    } else {
+                        Upd::UpToDate
+                    }
+                }
+                Err(e) => Upd::Failed(e.to_string()),
+            };
+            *st.lock().unwrap() = res;
+            ctx.request_repaint();
+        });
     }
 
     fn begin(&mut self) {
@@ -169,7 +233,7 @@ impl CopyApp {
         ui.heading("Installare CopyRs?");
         ui.label("CopyRs si copia in una cartella stabile del tuo profilo (senza permessi di amministratore) e si integra con Windows:");
         ui.add_space(4.0);
-        ui.label("- «Copia con CopyRs», «Sposta con CopyRs» e «Incolla con CopyRs» nel menu del clic destro (su Windows 11: «Mostra altre opzioni»)");
+        ui.label("- nel clic destro: «Copia con CopyRs» + «Incolla con CopyRs» (come Copia e Incolla), «Copia con CopyRs in…» e «Sposta con CopyRs in…» (scegli la cartella di destinazione); su Windows 11 sotto «Mostra altre opzioni»");
         ui.label("- la voce «Invia a → CopyRs»");
         ui.label("- un collegamento nel menu Start, da cui puoi fissarlo alla barra delle applicazioni");
         ui.add_space(6.0);
@@ -269,7 +333,7 @@ impl CopyApp {
 
                 ui.add_space(10.0);
                 ui.strong("Integrazione con Windows");
-                ui.label("Aggiunge «Copia con CopyRs» e «Incolla con CopyRs» al menu contestuale di Esplora file. Non sostituisce Ctrl+C / Ctrl+V. Su Windows 11 la voce si trova in clic destro → «Mostra altre opzioni».");
+                ui.label("Aggiunge al clic destro: «Copia con CopyRs» + «Incolla con CopyRs» (come Copia e Incolla), «Copia con CopyRs in…» e «Sposta con CopyRs in…» (scelgono la cartella di destinazione). Non sostituisce Ctrl+C / Ctrl+V. Su Windows 11 le voci si trovano in clic destro → «Mostra altre opzioni».");
                 let (ok, total) = shell::status();
                 if total > 0 && ok == total {
                     ui.colored_label(Color32::from_rgb(40, 170, 80), format!("Stato: attiva ({ok}/{total} voci)"));
@@ -347,6 +411,32 @@ impl CopyApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(640.0);
             ui.heading("CopyRs – copia file in modo semplice e controllato");
+            ui.add_space(10.0);
+            let st = self.upd.lock().unwrap().clone();
+            ui.horizontal(|ui| {
+                ui.label(format!("Versione {}", app_version()));
+                if st == Upd::Checking {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Controllo in corso…");
+                } else if ui.button("Cerca aggiornamenti").clicked() {
+                    self.check_updates(ui.ctx());
+                }
+            });
+            match &st {
+                Upd::UpToDate => {
+                    ui.colored_label(Color32::from_rgb(40, 170, 80), "Hai già l'ultima versione.");
+                }
+                Upd::Available(tag) => {
+                    ui.colored_label(ORANGE, format!("Nuova versione disponibile: {tag}"));
+                    if ui.button("Apri la pagina di download").clicked() {
+                        shell::open_url(RELEASES_URL);
+                    }
+                }
+                Upd::Failed(e) => {
+                    ui.colored_label(RED, format!("Controllo non riuscito: {e}"));
+                }
+                _ => {}
+            }
             ui.add_space(10.0);
             ui.label("Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)");
             ui.add_space(6.0);
@@ -779,9 +869,21 @@ fn main() -> eframe::Result {
     if move_flag {
         raw.remove(0);
     }
+    let stage_flag = raw.first().map_or(false, |a| a.as_os_str() == "--stage");
+    if stage_flag {
+        raw.remove(0);
+        // «Copia con CopyRs»: mette da parte i file selezionati (una sola raccolta per selezioni multiple), senza finestre.
+        let mut srcs: Vec<PathBuf> = raw.into_iter().map(PathBuf::from).collect();
+        if let ipc::Role::Leader(g) = ipc::gather_start(&srcs) {
+            g.wait_quiet(500);
+            srcs.extend(g.collect());
+            ipc::stage_write(&srcs, false);
+        }
+        return Ok(());
+    }
     let paste = raw.first().map_or(false, |a| a.as_os_str() == "--paste");
     let (mut sources, mut dest, mv) = if paste {
-        let (files, cut) = shell::clipboard_files();
+        let (files, cut) = paste_source();
         (files, raw.get(1).map(PathBuf::from), cut)
     } else {
         (raw.into_iter().map(PathBuf::from).collect::<Vec<_>>(), None, move_flag)
@@ -836,6 +938,7 @@ fn main() -> eframe::Result {
         }
     }
 
+    let nothing = paste && sources.is_empty();
     let (w, h) = dims(load_size());
     let icon = egui::IconData { rgba: include_bytes!("../assets/icon_128.rgba").to_vec(), width: 128, height: 128 };
     let opts = eframe::NativeOptions {
@@ -864,6 +967,9 @@ fn main() -> eframe::Result {
             }
             let mut app = CopyApp::new(sources, dest, mv, auto, Some(rx));
             app.settings = open_settings;
+            if nothing {
+                app.msg = "Niente da incollare: usa prima «Copia con CopyRs» sui file (oppure Ctrl+C), poi «Incolla con CopyRs» nella cartella di destinazione.".into();
+            }
             cc.egui_ctx.set_theme(if app.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
             Ok(Box::new(app))
         }),
