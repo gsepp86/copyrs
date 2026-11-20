@@ -296,8 +296,10 @@ impl CopyApp {
             ui.strong(self.tr("Tema", "Theme"));
             let before = self.dark;
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.dark, true, self.tr("Scuro", "Dark"));
-                ui.radio_value(&mut self.dark, false, self.tr("Chiaro", "Light"));
+                let lbl_dark = self.tr("Scuro", "Dark");
+                let lbl_light = self.tr("Chiaro", "Light");
+                ui.radio_value(&mut self.dark, true, lbl_dark);
+                ui.radio_value(&mut self.dark, false, lbl_light);
             });
             if self.dark != before {
                 ui.ctx().set_theme(if self.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
