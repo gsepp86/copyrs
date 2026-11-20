@@ -1,4 +1,4 @@
-#CopyRs 2.3.0
+## CopyRs 2.3.0
 
 Interfaccia professione per la copia di file leggero, gratuito e open source scritto in Rust: finestra compatta, coda di copia, verifica CRC32, pausa / salta / annulla, gestione dei file già presenti e integrazione con Esplora file.
 
