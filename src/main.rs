@@ -42,6 +42,7 @@ struct CopyApp {
     only_errors: bool,
     settings: bool,
     dark: bool,
+    lang: usize,
     autostart: bool,
     autoclose: bool,
     done_at: Option<Instant>,
@@ -106,6 +107,10 @@ fn load_size() -> usize {
     shell::load_str("size").and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0).min(2)
 }
 
+fn load_lang() -> usize {
+    shell::load_str("lang").and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0).min(1)
+}
+
 /// Versione mostrata all'utente (2.2.0 -> 2.2).
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").trim_end_matches(".0").to_string()
@@ -157,6 +162,7 @@ impl CopyApp {
             mv,
             first_run: shell::needs_prompt(),
             dark: shell::load_dark(),
+            lang: load_lang(),
             autostart: auto,
             autoclose: shell::load_flag("autoclose", true),
             jobs,
@@ -228,6 +234,10 @@ impl CopyApp {
         }
     }
 
+    fn tr(&self, it: &'static str, en: &'static str) -> &'static str {
+        if self.lang == 0 { it } else { en }
+    }
+
     fn first_run_ui(&mut self, ui: &mut egui::Ui) {
         ui.set_max_width(640.0);
         ui.heading("Installare CopyRs?");
@@ -283,15 +293,26 @@ impl CopyApp {
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(640.0);
-            ui.strong("Tema");
+            ui.strong(self.tr("Tema", "Theme"));
             let before = self.dark;
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.dark, true, "Scuro");
-                ui.radio_value(&mut self.dark, false, "Chiaro");
+                ui.radio_value(&mut self.dark, true, self.tr("Scuro", "Dark"));
+                ui.radio_value(&mut self.dark, false, self.tr("Chiaro", "Light"));
             });
             if self.dark != before {
                 ui.ctx().set_theme(if self.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
                 shell::save_dark(self.dark);
+            }
+
+            ui.add_space(10.0);
+            ui.strong(self.tr("Lingua", "Language"));
+            let before_lang = self.lang;
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.lang, 0, "Italiano");
+                ui.radio_value(&mut self.lang, 1, "English");
+            });
+            if self.lang != before_lang {
+                shell::save_str("lang", &self.lang.to_string());
             }
 
             ui.add_space(10.0);
@@ -635,8 +656,8 @@ impl CopyApp {
             });
             ui.separator();
             if let Some(it) = items.get(cur) {
-                ui.label(format!("Da: {}", it.src.display()));
-                ui.label(format!("A:  {}", it.dst.display()));
+                ui.add(egui::Label::new(format!("Da: {}", it.src.display())).truncate());
+                ui.add(egui::Label::new(format!("A:  {}", it.dst.display())).truncate());
             }
             ui.add_space(4.0);
             let ft = sh.file_total.load(Relaxed);
@@ -661,7 +682,12 @@ impl CopyApp {
                 bar = bar.fill(RED);
             }
             ui.add(bar);
-            ui.label(format!("{} / {}", fmt(done), fmt(total)));
+            let disp_total = {
+                let ts = sh.total_size.load(Relaxed);
+                if ts == 0 { total } else { ts }
+            };
+            let disp_done = sh.done_size.load(Relaxed);
+            ui.label(format!("{} / {}", fmt(disp_done), fmt(disp_total)));
             if !finished {
                 let eta_txt = eta.map(|e| format!(" — mancano {}:{:02}", e / 60, e % 60)).unwrap_or_default();
                 ui.label(format!("{}/s{}", fmt(self.speed as u64), eta_txt));
@@ -702,9 +728,11 @@ impl CopyApp {
             let idx: Vec<usize> =
                 (0..items.len()).filter(|&i| !self.only_errors || is_err(&items[i].status)).collect();
             let rh = ui.text_style_height(&egui::TextStyle::Body) + 3.0;
+            let cur_pos = idx.iter().position(|&i| i == cur).unwrap_or(0);
             TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
+                .scroll_to_row(cur_pos, Some(egui::Align::Center))
                 .column(Column::exact(100.0))
                 .column(Column::initial(200.0).clip(true))
                 .column(Column::exact(86.0))
@@ -742,7 +770,9 @@ impl CopyApp {
                             ui.colored_label(col, txt);
                         });
                         row.col(|ui| {
-                            if is_bad {
+                            if i == cur {
+                                ui.colored_label(Color32::from_rgb(80, 180, 255), egui::RichText::new(name).strong());
+                            } else if is_bad {
                                 ui.colored_label(RED, name);
                             } else {
                                 ui.label(name);
@@ -774,6 +804,7 @@ impl CopyApp {
                 if it.status == Status::Waiting {
                     it.status = Status::Cancelled;
                     sh.done_bytes.fetch_add(it.weight(), Relaxed);
+                    sh.done_size.fetch_add(it.size, Relaxed);
                 }
             }
             sh.paused.store(false, Relaxed);
@@ -787,8 +818,10 @@ impl CopyApp {
             match st {
                 Status::Waiting => {
                     let w = items[i].weight();
+                    let sz = items[i].size;
                     items[i].status = Status::Skipped;
                     sh.done_bytes.fetch_add(w, Relaxed);
+                    sh.done_size.fetch_add(sz, Relaxed);
                 }
                 Status::Copying => sh.skip.store(true, Relaxed),
                 _ => {}

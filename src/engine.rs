@@ -57,6 +57,8 @@ pub struct Shared {
     pub items: Mutex<Vec<Item>>,
     pub done_bytes: AtomicU64,
     pub total_bytes: AtomicU64,
+    pub done_size: AtomicU64,
+    pub total_size: AtomicU64,
     pub current: AtomicUsize,
     pub file_done: AtomicU64,
     pub file_total: AtomicU64,
@@ -73,6 +75,8 @@ impl Shared {
             items: Mutex::new(Vec::new()),
             done_bytes: AtomicU64::new(0),
             total_bytes: AtomicU64::new(0),
+            done_size: AtomicU64::new(0),
+            total_size: AtomicU64::new(0),
             current: AtomicUsize::new(0),
             file_done: AtomicU64::new(0),
             file_total: AtomicU64::new(0),
@@ -88,6 +92,7 @@ impl Shared {
     pub fn append(&self, items: Vec<Item>) {
         let w: u64 = items.iter().map(|i| i.weight()).sum();
         self.total_bytes.fetch_add(w, Relaxed);
+        self.total_size.fetch_add(items.iter().map(|i| i.size).sum::<u64>(), Relaxed);
         self.items.lock().unwrap().extend(items);
     }
 
@@ -209,7 +214,7 @@ fn stop_requested(sh: &Shared) -> Option<Out> {
     }
 }
 
-fn copy_one(sh: &Shared, src: &Path, dst: &Path, verify: bool, copied: &mut u64) -> io::Result<Out> {
+fn copy_one(sh: &Shared, src: &Path, dst: &Path, verify: bool, copied: &mut u64, copied_actual: &mut u64) -> io::Result<Out> {
     if let Some(p) = dst.parent() {
         ctx(fs::create_dir_all(p), "creazione della cartella", p)?;
     }
@@ -231,6 +236,7 @@ fn copy_one(sh: &Shared, src: &Path, dst: &Path, verify: bool, copied: &mut u64)
         ctx(w.write_all(&buf[..n]), "scrittura della destinazione", dst)?;
         h.update(&buf[..n]);
         *copied += n as u64;
+        *copied_actual += n as u64;
         sh.done_bytes.fetch_add(n as u64, Relaxed);
         sh.file_done.fetch_add(n as u64, Relaxed);
         // Scrittura reale su disco ogni 16 MB: cosi' la barra segue la velocita' vera e non quella della cache.
@@ -273,8 +279,9 @@ fn copy_one(sh: &Shared, src: &Path, dst: &Path, verify: bool, copied: &mut u64)
     Ok(Out::Done)
 }
 
-fn finish(sh: &Shared, i: usize, st: Status, add: u64) {
-    sh.done_bytes.fetch_add(add, Relaxed);
+fn finish(sh: &Shared, i: usize, st: Status, add_w: u64, add_a: u64) {
+    sh.done_bytes.fetch_add(add_w, Relaxed);
+    sh.done_size.fetch_add(add_a, Relaxed);
     sh.items.lock().unwrap()[i].status = st;
 }
 
@@ -315,7 +322,7 @@ pub fn run(sh: Arc<Shared>) {
         // Sicurezza: mai copiare un file su se stesso (lo troncherebbe).
         if let (Ok(a), Ok(b)) = (src.canonicalize(), dst.canonicalize()) {
             if a == b {
-                finish(&sh, i, Status::Failed("origine e destinazione coincidono".into()), size * ph);
+                finish(&sh, i, Status::Failed("origine e destinazione coincidono".into()), size * ph, size);
                 continue;
             }
         }
@@ -326,7 +333,7 @@ pub fn run(sh: Arc<Shared>) {
                 _ => false,
             };
             if skip {
-                finish(&sh, i, Status::Skipped, size * ph);
+                finish(&sh, i, Status::Skipped, size * ph, size);
                 continue;
             }
             if policy == Collision::Rename {
@@ -334,7 +341,8 @@ pub fn run(sh: Arc<Shared>) {
             }
         }
         let mut copied = 0u64;
-        let st = match copy_one(&sh, &src, &dst, verify, &mut copied) {
+        let mut copied_actual = 0u64;
+        let st = match copy_one(&sh, &src, &dst, verify, &mut copied, &mut copied_actual) {
             Ok(Out::Done) => {
                 if mv {
                     let _ = fs::remove_file(&src);
@@ -346,6 +354,6 @@ pub fn run(sh: Arc<Shared>) {
             Ok(Out::Cancelled) => Status::Cancelled,
             Err(e) => Status::Failed(e.to_string()),
         };
-        finish(&sh, i, st, (size * ph).saturating_sub(copied));
+        finish(&sh, i, st, (size * ph).saturating_sub(copied), size.saturating_sub(copied_actual));
     }
 }
