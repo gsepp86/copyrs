@@ -635,6 +635,9 @@ impl CopyApp {
         let (mut act_cancel, mut act_skip_cur, mut act_reset) = (false, false, false);
         let mut skip_rows: Vec<usize> = Vec::new();
 
+        // Contatore file falliti
+        let failed_count = sh.failed_items.lock().unwrap().len();
+
         egui::SidePanel::right("side").exact_width(320.0).resizable(false).show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if finished {
@@ -649,6 +652,12 @@ impl CopyApp {
                     if ui.button("Salta file").clicked() {
                         act_skip_cur = true;
                     }
+                    // Bottone Retry per tutti i file falliti
+                    if failed_count > 0 {
+                        if ui.button(format!("Retry {} file", failed_count)).clicked() {
+                            sh.skip.store(true, Relaxed);
+                        }
+                    }
                     let stop = egui::Button::new(egui::RichText::new("Annulla tutto").color(Color32::WHITE))
                         .fill(Color32::from_rgb(170, 45, 45));
                     if ui.add(stop).clicked() {
@@ -657,6 +666,10 @@ impl CopyApp {
                 }
             });
             ui.separator();
+            // Mostra numero file falliti
+            if failed_count > 0 {
+                ui.colored_label(RED, format!("Falliti: {failed_count}"));
+            }
             if let Some(it) = items.get(cur) {
                 ui.add(egui::Label::new(format!("Da: {}", it.src.display())).truncate());
                 ui.add(egui::Label::new(format!("A:  {}", it.dst.display())).truncate());

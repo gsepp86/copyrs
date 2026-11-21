@@ -67,6 +67,8 @@ pub struct Shared {
     pub cancel: AtomicBool,
     pub skip: AtomicBool,
     pub shutdown: AtomicBool,
+    pub failed_items: Mutex<Vec<(usize, String)>>,
+    pub dest_path: Option<PathBuf>
 }
 
 impl Shared {
@@ -85,6 +87,8 @@ impl Shared {
             cancel: AtomicBool::new(false),
             skip: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
+            failed_items: Mutex::new(Vec::new()),
+            dest_path: None,
         }
     }
 
@@ -97,6 +101,8 @@ impl Shared {
     }
 
     pub fn is_active(&self) -> bool {
+
+/// Espande file e cartelle in una lista piatta di file da copiare.
         self.items.lock().unwrap().iter().any(|i| matches!(i.status, Status::Waiting | Status::Copying))
     }
 }
