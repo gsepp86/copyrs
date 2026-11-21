@@ -633,6 +633,7 @@ impl CopyApp {
         }
 
         let (mut act_cancel, mut act_skip_cur, mut act_reset) = (false, false, false);
+        let mut act_retry = false;
         let mut skip_rows: Vec<usize> = Vec::new();
 
         // Contatore file falliti
@@ -655,7 +656,7 @@ impl CopyApp {
                     // Bottone Retry per tutti i file falliti
                     if failed_count > 0 {
                         if ui.button(format!("Retry {} file", failed_count)).clicked() {
-                            sh.skip.store(true, Relaxed);
+                            act_retry = true;
                         }
                     }
                     let stop = egui::Button::new(egui::RichText::new("Annulla tutto").color(Color32::WHITE))
@@ -669,6 +670,9 @@ impl CopyApp {
             // Mostra numero file falliti
             if failed_count > 0 {
                 ui.colored_label(RED, format!("Falliti: {failed_count}"));
+                if let Some((_, why)) = sh.failed_items.lock().unwrap().first().cloned() {
+                    ui.add(egui::Label::new(egui::RichText::new(why).small()).wrap());
+                }
             }
             if let Some(it) = items.get(cur) {
                 ui.add(egui::Label::new(format!("Da: {}", it.src.display())).truncate());
@@ -814,6 +818,38 @@ impl CopyApp {
         });
 
         // Azioni richieste dall'utente (applicate dopo il disegno, a elenco libero).
+        if act_retry {
+            let mut n = 0usize;
+            for it in items.iter_mut() {
+                if matches!(it.status, Status::Failed(_) | Status::Mismatch) {
+                    it.status = Status::Waiting;
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                // Ricalcola l'avanzamento: i file falliti tornano "da fare".
+                let total_w: u64 = items.iter().map(|i| i.weight()).sum();
+                let total_s: u64 = items.iter().map(|i| i.size).sum();
+                let done_w: u64 = items
+                    .iter()
+                    .filter(|i| matches!(i.status, Status::Done | Status::Skipped | Status::Cancelled))
+                    .map(|i| i.weight())
+                    .sum();
+                let done_s: u64 = items
+                    .iter()
+                    .filter(|i| matches!(i.status, Status::Done | Status::Skipped | Status::Cancelled))
+                    .map(|i| i.size)
+                    .sum();
+                sh.total_bytes.store(total_w, Relaxed);
+                sh.total_size.store(total_s, Relaxed);
+                sh.done_bytes.store(done_w, Relaxed);
+                sh.done_size.store(done_s, Relaxed);
+                sh.failed_items.lock().unwrap().clear();
+                self.only_errors = false;
+                sh.paused.store(false, Relaxed);
+                sh.retry.store(true, Relaxed);
+            }
+        }
         if act_cancel {
             for it in items.iter_mut() {
                 if it.status == Status::Waiting {

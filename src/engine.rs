@@ -68,7 +68,7 @@ pub struct Shared {
     pub skip: AtomicBool,
     pub shutdown: AtomicBool,
     pub failed_items: Mutex<Vec<(usize, String)>>,
-    pub dest_path: Option<PathBuf>
+    pub retry: AtomicBool,
 }
 
 impl Shared {
@@ -88,7 +88,7 @@ impl Shared {
             skip: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             failed_items: Mutex::new(Vec::new()),
-            dest_path: None,
+            retry: AtomicBool::new(false),
         }
     }
 
@@ -101,8 +101,6 @@ impl Shared {
     }
 
     pub fn is_active(&self) -> bool {
-
-/// Espande file e cartelle in una lista piatta di file da copiare.
         self.items.lock().unwrap().iter().any(|i| matches!(i.status, Status::Waiting | Status::Copying))
     }
 }
@@ -295,6 +293,10 @@ fn finish(sh: &Shared, i: usize, st: Status, add_w: u64, add_a: u64) {
 pub fn run(sh: Arc<Shared>) {
     let mut cursor = 0usize;
     loop {
+        // Dopo un "Retry" i file falliti davanti al cursore vanno ripresi.
+        if sh.retry.swap(false, Relaxed) {
+            cursor = 0;
+        }
         if sh.shutdown.load(Relaxed) {
             break;
         }
@@ -317,6 +319,45 @@ pub fn run(sh: Arc<Shared>) {
             continue;
         };
         cursor = i + 1;
+
+        // Controllo dello spazio PRIMA di copiare: se sul volume di destinazione
+        // non c'e' posto per la coda, i file non vengono nemmeno aperti.
+        if let Some(free) = free_space_at(&dst) {
+            let mut need = 0u64;
+            let mut targets: Vec<usize> = Vec::new();
+            {
+                let v = sh.items.lock().unwrap();
+                for (k, it) in v.iter().enumerate() {
+                    if matches!(it.status, Status::Waiting | Status::Copying) && same_volume(&it.dst, &dst) {
+                        need = need.saturating_add(it.size);
+                        targets.push(k);
+                    }
+                }
+            }
+            if need > free {
+                let msg = format!(
+                    "spazio insufficiente sul disco di destinazione: servono {} ma ne restano {}",
+                    fmt_bytes(need),
+                    fmt_bytes(free)
+                );
+                {
+                    let mut v = sh.items.lock().unwrap();
+                    let mut failed = sh.failed_items.lock().unwrap();
+                    for k in targets {
+                        if matches!(v[k].status, Status::Waiting | Status::Copying) {
+                            let w = v[k].weight();
+                            let sz = v[k].size;
+                            v[k].status = Status::Failed(msg.clone());
+                            sh.done_bytes.fetch_add(w, Relaxed);
+                            sh.done_size.fetch_add(sz, Relaxed);
+                            failed.push((k, msg.clone()));
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
         let ph: u64 = if verify { 2 } else { 1 };
         sh.current.store(i, Relaxed);
         sh.skip.store(false, Relaxed);
@@ -358,8 +399,94 @@ pub fn run(sh: Arc<Shared>) {
             Ok(Out::Mismatch) => Status::Mismatch,
             Ok(Out::Skipped) => Status::Skipped,
             Ok(Out::Cancelled) => Status::Cancelled,
-            Err(e) => Status::Failed(e.to_string()),
+            Err(e) => {
+                // Non lasciare sul disco una copia parziale: occupa spazio e inganna.
+                let _ = fs::remove_file(&dst);
+                let why = if is_disk_full(&e) {
+                    format!("spazio esaurito sul disco di destinazione durante la scrittura: {e}")
+                } else {
+                    format!("copia non riuscita: {e}")
+                };
+                Status::Failed(why)
+            }
         };
+        match &st {
+            Status::Failed(m) => sh.failed_items.lock().unwrap().push((i, m.clone())),
+            Status::Mismatch => sh.failed_items
+                .lock()
+                .unwrap()
+                .push((i, "il CRC32 della copia non corrisponde all'originale".into())),
+            _ => {}
+        }
         finish(&sh, i, st, (size * ph).saturating_sub(copied), size.saturating_sub(copied_actual));
+    }
+}
+
+/// Spazio libero disponibile per l'utente sul volume che contiene `p`.
+/// Su Windows usa GetDiskFreeSpaceExW (API di sistema, nessuna dipendenza in piu').
+#[cfg(windows)]
+fn free_space_at(p: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            lpTotalNumberOfBytes: *mut u64,
+            lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+    let dir = nearest_dir(p)?;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, &mut total_free) };
+    if ok != 0 { Some(free) } else { None }
+}
+
+#[cfg(not(windows))]
+fn free_space_at(_p: &Path) -> Option<u64> {
+    None
+}
+
+/// Prima cartella esistente risalendo dal percorso (la destinazione puo' non esistere ancora).
+#[cfg(windows)]
+fn nearest_dir(p: &Path) -> Option<PathBuf> {
+    let mut cur = if p.is_dir() { Some(p.to_path_buf()) } else { p.parent().map(Path::to_path_buf) };
+    while let Some(c) = cur {
+        if c.is_dir() {
+            return Some(c);
+        }
+        cur = c.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Vero se i due percorsi sono sullo stesso volume (stessa lettera di unita' o stesso root).
+fn same_volume(a: &Path, b: &Path) -> bool {
+    use std::path::Component;
+    match (a.components().next(), b.components().next()) {
+        (Some(Component::Prefix(x)), Some(Component::Prefix(y))) => x == y,
+        (Some(Component::RootDir), Some(Component::RootDir)) => true,
+        _ => false,
+    }
+}
+
+fn is_disk_full(e: &io::Error) -> bool {
+    // 112 = ERROR_DISK_FULL (Windows), 28 = ENOSPC (Unix).
+    matches!(e.raw_os_error(), Some(112) | Some(28))
+}
+
+/// Byte in forma leggibile, es. "1.4 GB".
+fn fmt_bytes(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    let n = n as f64;
+    if n >= KB * KB * KB {
+        format!("{:.1} GB", n / (KB * KB * KB))
+    } else if n >= KB * KB {
+        format!("{:.0} MB", n / (KB * KB))
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{:.0} B", n)
     }
 }
