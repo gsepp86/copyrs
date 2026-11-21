@@ -634,6 +634,7 @@ impl CopyApp {
 
         let (mut act_cancel, mut act_skip_cur, mut act_reset) = (false, false, false);
         let mut act_retry = false;
+        let mut retry_rows: Vec<usize> = Vec::new();
         let mut skip_rows: Vec<usize> = Vec::new();
 
         // Contatore file falliti
@@ -645,6 +646,16 @@ impl CopyApp {
                     if ui.button("Torna all'inizio").clicked() {
                         act_reset = true;
                     }
+                    // Anche a coda finita: riprova i file falliti (es. spazio liberato nel frattempo).
+                    if failed_count > 0
+                        && ui
+                            .add(egui::Button::new(
+                                egui::RichText::new(format!("Riprova {failed_count} file")).strong(),
+                            ))
+                            .clicked()
+                    {
+                        act_retry = true;
+                    }
                 } else {
                     let paused = sh.paused.load(Relaxed);
                     if ui.button(if paused { "Riprendi" } else { "Pausa" }).clicked() {
@@ -655,7 +666,7 @@ impl CopyApp {
                     }
                     // Bottone Retry per tutti i file falliti
                     if failed_count > 0 {
-                        if ui.button(format!("Retry {} file", failed_count)).clicked() {
+                        if ui.button(format!("Riprova {} file", failed_count)).clicked() {
                             act_retry = true;
                         }
                     }
@@ -808,6 +819,9 @@ impl CopyApp {
                                 if is_bad {
                                     let m = err_msg(&it.status);
                                     ui.colored_label(RED, m.clone()).on_hover_text(m);
+                                    if ui.small_button("Riprova").clicked() {
+                                        retry_rows.push(i);
+                                    }
                                 } else {
                                     ui.weak(it.dst.display().to_string());
                                 }
@@ -818,13 +832,27 @@ impl CopyApp {
         });
 
         // Azioni richieste dall'utente (applicate dopo il disegno, a elenco libero).
-        if act_retry {
+        if act_retry || !retry_rows.is_empty() {
             let mut n = 0usize;
-            for it in items.iter_mut() {
-                if matches!(it.status, Status::Failed(_) | Status::Mismatch) {
-                    it.status = Status::Waiting;
-                    n += 1;
+            if act_retry {
+                for it in items.iter_mut() {
+                    if matches!(it.status, Status::Failed(_) | Status::Mismatch) {
+                        it.status = Status::Waiting;
+                        n += 1;
+                    }
                 }
+                sh.failed_items.lock().unwrap().clear();
+            } else {
+                for i in retry_rows.iter().copied() {
+                    if matches!(items[i].status, Status::Failed(_) | Status::Mismatch) {
+                        items[i].status = Status::Waiting;
+                        n += 1;
+                    }
+                }
+                sh.failed_items
+                    .lock()
+                    .unwrap()
+                    .retain(|(k, _)| !retry_rows.contains(k));
             }
             if n > 0 {
                 // Ricalcola l'avanzamento: i file falliti tornano "da fare".
@@ -844,7 +872,6 @@ impl CopyApp {
                 sh.total_size.store(total_s, Relaxed);
                 sh.done_bytes.store(done_w, Relaxed);
                 sh.done_size.store(done_s, Relaxed);
-                sh.failed_items.lock().unwrap().clear();
                 self.only_errors = false;
                 sh.paused.store(false, Relaxed);
                 sh.retry.store(true, Relaxed);

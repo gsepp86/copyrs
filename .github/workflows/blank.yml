@@ -31,9 +31,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: target/release/copyrs.exe
-          name: CopyRs v2.3.1
+          name: CopyRs v2.3.2
           body: |
-            ## CopyRs v2.3.1
+            ## CopyRs v2.3.2
 
             Copiatore di file veloce per Windows, con interfaccia grafica, verifica
             dei dati copiati e gestione degli errori.
@@ -49,6 +49,9 @@ jobs:
               ci sono file falliti; un clic li rimette in coda e li ricopia.
             - **Conteggio dei falliti**: la barra laterale mostra `Falliti: N` in rosso,
               così vedi subito quanti file non sono stati copiati.
+            - **Riprova sempre disponibile**: il pulsante `Riprova N file` resta visibile
+              anche a copia terminata (utile dopo aver liberato spazio sulla chiavetta) e
+              ogni riga in errore ha il suo pulsante `Riprova`.
 
             ### Caratteristiche principali
 
