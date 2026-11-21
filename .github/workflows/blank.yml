@@ -2,6 +2,9 @@ name: Build and Package
 
 on: [push]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,4 +31,34 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: target/release/copyrs.exe
-          generate_release_notes: true
+          name: CopyRS v2.3.0
+          body: |
+            ## CopyRS v2.3.0
+
+            Copiatore di file veloce per Windows, con interfaccia grafica, verifica
+            dei dati copiati e gestione degli errori.
+
+            ### Novità di questa versione
+
+            - **Controllo dello spazio su disco**: prima di copiare, l'app verifica
+              che il disco di destinazione abbia spazio sufficiente. Se non basta,
+              il file viene segnato come fallito con il motivo esatto.
+            - **Motivo degli errori**: ogni copia fallita riporta la causa, ad esempio
+              `Spazio insufficiente: richiesto X GB, disponibile Y GB`.
+            - **Pulsante Riprova**: nella barra laterale compare `Retry N file` quando
+              ci sono file falliti; un clic li rimette in coda e li ricopia.
+            - **Conteggio dei falliti**: la barra laterale mostra `Falliti: N` in rosso,
+              così vedi subito quanti file non sono stati copiati.
+
+            ### Caratteristiche principali
+
+            - Copia file e intere cartelle con coda e avanzamento in tempo reale
+            - Verifica dell'integrità dei file copiati (hash)
+            - Gestione dei conflitti: sovrascrivi, salta, solo più recenti, rinomina
+            - Pausa, salta file, annulla tutto e ripresa della copia
+            - Interfaccia nativa veloce e leggera
+
+            ### Note
+
+            Nessuna modifica incompatibile: aggiorna semplicemente il programma.
+            Scarica `copyrs.exe` qui sotto e avvialo.
